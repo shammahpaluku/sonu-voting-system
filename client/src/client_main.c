@@ -1122,16 +1122,26 @@ void main_menu(void) {
     }
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    const char *server_ip = SERVER_IP;
+    
+    // Allow server IP as command line argument
+    if (argc > 1) {
+        server_ip = argv[1];
+        printf("[+] Using server IP: %s\n", server_ip);
+    } else {
+        printf("[+] Using default server IP: %s\n", server_ip);
+    }
+    
     // Connect to server
-    g_sock = nh_client_connect(SERVER_IP, SERVER_PORT);
+    g_sock = nh_client_connect(server_ip, SERVER_PORT);
     if (g_sock == ERR_CONN) {
-        printf("Cannot connect to SONU server at %s:%d\n", SERVER_IP, SERVER_PORT);
+        printf("Cannot connect to SONU server at %s:%d\n", server_ip, SERVER_PORT);
         printf("Please ensure the server is running first.\n");
         return 1;
     }
     
-    printf("Connected to SONU server.\n");
+    printf("Connected to SONU server at %s:%d.\n", server_ip, SERVER_PORT);
     
     main_menu();
     
