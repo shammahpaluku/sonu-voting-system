@@ -8,3 +8,5 @@
 8|Alice_Wairimu|4
 9|Samuel_Kiprop|5
 10|Faith_Chebet|5
+11|Alice|1
+12|CandidateUDP|1

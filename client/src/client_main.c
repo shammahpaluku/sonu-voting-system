@@ -6,6 +6,7 @@
 
 // Global state
 static int  g_sock = -1;
+static struct sockaddr_in g_server_addr;
 static int  g_user_id = -1;
 static char g_user_name[MAX_NAME_LEN];
 static int  g_is_admin = 0;
@@ -43,14 +44,14 @@ void handle_candidate_application(void);
 void main_menu(void);
 
 void client_send_recv(const char *cmd, char *response, int resp_len) {
-    if (nh_send_line(g_sock, cmd) != SUCCESS) {
-        printf("\nLost connection to server. Exiting.\n");
+    if (nh_send_to(g_sock, cmd, &g_server_addr) != SUCCESS) {
+        printf("\nFailed to send command. Exiting.\n");
         nh_close(g_sock);
         exit(1);
     }
     
-    if (nh_recv_line(g_sock, response, resp_len) != SUCCESS) {
-        printf("\nLost connection to server. Exiting.\n");
+    if (nh_recv_from(g_sock, response, resp_len) != SUCCESS) {
+        printf("\nFailed to receive response. Exiting.\n");
         nh_close(g_sock);
         exit(1);
     }
@@ -60,8 +61,8 @@ void client_recv_multiline(void) {
     char line[CMD_BUF_LEN];
     
     while (1) {
-        if (nh_recv_line(g_sock, line, sizeof(line)) != SUCCESS) {
-            printf("\nLost connection to server. Exiting.\n");
+        if (nh_recv_from(g_sock, line, sizeof(line)) != SUCCESS) {
+            printf("\nFailed to receive response. Exiting.\n");
             nh_close(g_sock);
             exit(1);
         }
@@ -82,7 +83,7 @@ void client_recv_multiline(void) {
 void print_header(const char *title) {
     printf("\033[2J\033[H");
     printf("============================================================\n");
-    printf("SONU ELECTRONIC VOTING SYSTEM\n");
+    printf("SONU ELECTRONIC VOTING SYSTEM (UDP)\n");
     printf("%s\n", title);
     printf("============================================================\n\n");
 }
@@ -174,8 +175,8 @@ void voter_handle_vote(void) {
         
         // Read remaining lines
         while (pos_count < MAX_POSITIONS) {
-            if (nh_recv_line(g_sock, response, sizeof(response)) != SUCCESS) {
-                printf("\nLost connection to server. Exiting.\n");
+            if (nh_recv_from(g_sock, response, sizeof(response)) != SUCCESS) {
+                printf("\nFailed to receive response. Exiting.\n");
                 nh_close(g_sock);
                 exit(1);
             }
@@ -245,8 +246,8 @@ void voter_handle_vote(void) {
             
             // Read remaining candidate lines
             while (cand_count < MAX_CANDIDATES) {
-                if (nh_recv_line(g_sock, response, sizeof(response)) != SUCCESS) {
-                    printf("\nLost connection to server. Exiting.\n");
+                if (nh_recv_from(g_sock, response, sizeof(response)) != SUCCESS) {
+                    printf("\nFailed to receive response. Exiting.\n");
                     nh_close(g_sock);
                     exit(1);
                 }
@@ -347,8 +348,8 @@ void voter_handle_vote(void) {
                 
                 // Skip remaining lines
                 while (1) {
-                    if (nh_recv_line(g_sock, response, sizeof(response)) != SUCCESS) {
-                        printf("\nLost connection to server. Exiting.\n");
+                    if (nh_recv_from(g_sock, response, sizeof(response)) != SUCCESS) {
+                        printf("\nFailed to receive response. Exiting.\n");
                         nh_close(g_sock);
                         exit(1);
                     }
@@ -371,19 +372,35 @@ void voter_handle_vote(void) {
         return;
     }
     
-    // Submit votes
+    // Submit all votes in a single UDP datagram (connectionless demonstration)
+    char vote_cmd[CMD_BUF_LEN] = "CAST_ALL_VOTES";
+    int vote_count = 0;
+    
     for (int i = 0; i < pos_count; i++) {
         if (votes[i] != 0) {
-            char cmd[CMD_BUF_LEN];
-            snprintf(cmd, CMD_BUF_LEN, "CAST_VOTE %d %d", pos_ids[i], votes[i]);
-            client_send_recv(cmd, response, sizeof(response));
-            
-            if (strcmp(response, "OK") != 0) {
-                print_error(response);
-            }
+            char pair[64];
+            snprintf(pair, sizeof(pair), " %d:%d", pos_ids[i], votes[i]);
+            strncat(vote_cmd, pair, CMD_BUF_LEN - strlen(vote_cmd) - 1);
+            vote_count++;
         }
     }
     
+    if (vote_count == 0) {
+        printf("No votes to submit.\n");
+        pause_screen();
+        return;
+    }
+    
+    printf("\n[*] Sending %d vote(s) in a single UDP datagram...\n", vote_count);
+    client_send_recv(vote_cmd, response, sizeof(response));
+    
+    if (strcmp(response, "OK") != 0) {
+        print_error(response);
+    } else {
+        printf("\n[+] All votes submitted successfully in one datagram!\n");
+    }
+    pause_screen();
+
     // Logout
     client_send_recv("LOGOUT", response, sizeof(response));
     g_user_id = -1;
@@ -442,7 +459,7 @@ void admin_print_positions(void) {
     print_header("Positions");
     printf("ID  | Position Name\n");
     printf("----|------------------\n");
-    client_send_recv("LIST_POSITIONS", "dummy", 1); // Dummy response
+    nh_send_to(g_sock, "LIST_POSITIONS", &g_server_addr);
     client_recv_multiline();
 }
 
@@ -498,8 +515,8 @@ void admin_handle_register_candidate(void) {
     
     // Clear the multiline response
     while (1) {
-        if (nh_recv_line(g_sock, response, sizeof(response)) != SUCCESS) {
-            printf("\nLost connection to server. Exiting.\n");
+        if (nh_recv_from(g_sock, response, sizeof(response)) != SUCCESS) {
+            printf("\nFailed to receive response. Exiting.\n");
             nh_close(g_sock);
             exit(1);
         }
@@ -551,16 +568,12 @@ void admin_handle_results(void) {
     print_header("Election Results");
     
     // Send the command first
-    if (nh_send_line(g_sock, "RESULTS") != SUCCESS) {
-        printf("\nLost connection to server. Exiting.\n");
-        nh_close(g_sock);
-        exit(1);
-    }
+    nh_send_to(g_sock, "RESULTS", &g_server_addr);
     
     char line[CMD_BUF_LEN];
     while (1) {
-        if (nh_recv_line(g_sock, line, sizeof(line)) != SUCCESS) {
-            printf("\nLost connection to server. Exiting.\n");
+        if (nh_recv_from(g_sock, line, sizeof(line)) != SUCCESS) {
+            printf("\nFailed to receive response. Exiting.\n");
             nh_close(g_sock);
             exit(1);
         }
@@ -625,7 +638,7 @@ void admin_manage_applications(void) {
         print_header("Manage Candidate Applications");
         
         // Get pending applications
-        client_send_recv("LIST_APPLICATIONS", "dummy", 1);
+        nh_send_to(g_sock, "LIST_APPLICATIONS", &g_server_addr);
         
         char line[CMD_BUF_LEN];
         int app_ids[MAX_CANDIDATES];
@@ -635,7 +648,7 @@ void admin_manage_applications(void) {
         int app_count = 0;
         
         // Read applications
-        if (nh_recv_line(g_sock, line, sizeof(line)) == SUCCESS) {
+        if (nh_recv_from(g_sock, line, sizeof(line)) == SUCCESS) {
             if (!is_error(line)) {
                 // Parse first application
                 char buf[CMD_BUF_LEN];
@@ -668,7 +681,7 @@ void admin_manage_applications(void) {
                 
                 // Read remaining applications
                 while (app_count < MAX_CANDIDATES) {
-                    if (nh_recv_line(g_sock, line, sizeof(line)) != SUCCESS) break;
+                    if (nh_recv_from(g_sock, line, sizeof(line)) != SUCCESS) break;
                     if (strcmp(line, "END") == 0) break;
                     
                     strncpy(buf, line, CMD_BUF_LEN - 1);
@@ -918,11 +931,7 @@ void handle_candidate_application(void) {
     print_header("Apply for Candidacy");
     
     // Get available positions
-    if (nh_send_line(g_sock, "LIST_POSITIONS") != SUCCESS) {
-        printf("\nLost connection to server. Exiting.\n");
-        nh_close(g_sock);
-        exit(1);
-    }
+    nh_send_to(g_sock, "LIST_POSITIONS", &g_server_addr);
     
     char line[CMD_BUF_LEN];
     int pos_ids[MAX_POSITIONS];
@@ -930,7 +939,7 @@ void handle_candidate_application(void) {
     int pos_count = 0;
     
     // Read positions
-    if (nh_recv_line(g_sock, line, sizeof(line)) == SUCCESS) {
+    if (nh_recv_from(g_sock, line, sizeof(line)) == SUCCESS) {
         if (!is_error(line)) {
             // Parse first position
             char buf[CMD_BUF_LEN];
@@ -949,7 +958,7 @@ void handle_candidate_application(void) {
             
             // Read remaining positions
             while (pos_count < MAX_POSITIONS) {
-                if (nh_recv_line(g_sock, line, sizeof(line)) != SUCCESS) break;
+                if (nh_recv_from(g_sock, line, sizeof(line)) != SUCCESS) break;
                 if (strcmp(line, "END") == 0) break;
                 
                 strncpy(buf, line, CMD_BUF_LEN - 1);
@@ -1133,15 +1142,15 @@ int main(int argc, char *argv[]) {
         printf("[+] Using default server IP: %s\n", server_ip);
     }
     
-    // Connect to server
-    g_sock = nh_client_connect(server_ip, SERVER_PORT);
+    // Initialize UDP client
+    g_sock = nh_client_init(server_ip, SERVER_PORT, &g_server_addr);
     if (g_sock == ERR_CONN) {
-        printf("Cannot connect to SONU server at %s:%d\n", server_ip, SERVER_PORT);
+        printf("Cannot connect to SONU UDP server at %s:%d\n", server_ip, SERVER_PORT);
         printf("Please ensure the server is running first.\n");
         return 1;
     }
     
-    printf("Connected to SONU server at %s:%d.\n", server_ip, SERVER_PORT);
+    printf("Connected to SONU UDP server at %s:%d.\n", server_ip, SERVER_PORT);
     
     main_menu();
     

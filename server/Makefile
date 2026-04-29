@@ -1,5 +1,6 @@
 CC     = gcc
 CFLAGS = -std=c11 -Wall -Wextra -g -Iinclude
+LDFLAGS = -lrt
 
 SRCS = src/file_handler.c \
        src/utils.c \
@@ -21,7 +22,7 @@ all: $(TARGET)
 $(TARGET): $(SRCS)
 	@mkdir -p bin
 	@mkdir -p data
-	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET)
+	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET) $(LDFLAGS)
 
 run: all
 	./$(TARGET)

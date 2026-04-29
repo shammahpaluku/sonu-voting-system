@@ -1,6 +1,12 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <mqueue.h>
 #include "config.h"
 #include "net_handler.h"
 #include "file_handler.h"
@@ -14,33 +20,8 @@
 #include "tally.h"
 #include "application.h"
 
-// Command handler functions
-void cmd_login(int client_fd, char *args);
-void cmd_admin_login(int client_fd, char *args);
-void cmd_logout(int client_fd, char *args);
-void cmd_status(int client_fd, char *args);
-void cmd_self_register(int client_fd, char *args);
-void cmd_apply_candidate(int client_fd, char *args);
-void cmd_list_applications(int client_fd, char *args);
-void cmd_approve_application(int client_fd, char *args);
-void cmd_reject_application(int client_fd, char *args);
-void cmd_add_position(int client_fd, char *args);
-void cmd_list_positions(int client_fd, char *args);
-void cmd_register_cand(int client_fd, char *args);
-void cmd_list_cands(int client_fd, char *args);
-void cmd_open_voting(int client_fd, char *args);
-void cmd_close_voting(int client_fd, char *args);
-void cmd_cast_vote(int client_fd, char *args);
-void cmd_results(int client_fd, char *args);
-void cmd_reset(int client_fd, char *args);
-void cmd_quit(int client_fd, char *args);
-
-void dispatch_command(int client_fd, char *cmd_buf);
-void handle_session(int client_fd);
-
 static int last_was_quit = 0;
 
-// Helper function to replace underscores with spaces
 void replace_underscores(char *str) {
     for (int i = 0; str[i]; i++) {
         if (str[i] == '_') {
@@ -49,7 +30,6 @@ void replace_underscores(char *str) {
     }
 }
 
-// Helper function to replace spaces with underscores for wire format
 void replace_spaces(char *str) {
     for (int i = 0; str[i]; i++) {
         if (str[i] == ' ') {
@@ -58,17 +38,17 @@ void replace_spaces(char *str) {
     }
 }
 
-void cmd_login(int client_fd, char *args) {
+void cmd_login(int sock, struct sockaddr_in *client_addr, char *args) {
     char *token = strtok(args, " ");
     if (!token) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     int voter_id = atoi(token);
     char *password = strtok(NULL, " ");
     if (!password) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -76,57 +56,56 @@ void cmd_login(int client_fd, char *args) {
     if (result == SUCCESS) {
         char response[CMD_BUF_LEN];
         snprintf(response, CMD_BUF_LEN, "OK %s", auth_get_voter_name());
-        nh_send_line(client_fd, response);
+        nh_send_to(sock, response, client_addr);
     } else {
-        nh_send_line(client_fd, result == ERR_NOT_FOUND ? "ERR_NOT_FOUND" : "ERR_AUTH_FAIL");
+        nh_send_to(sock, result == ERR_NOT_FOUND ? "ERR_NOT_FOUND" : "ERR_AUTH_FAIL", client_addr);
     }
 }
 
-void cmd_admin_login(int client_fd, char *args) {
+void cmd_admin_login(int sock, struct sockaddr_in *client_addr, char *args) {
     char *username = strtok(args, " ");
     if (!username) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     char *password = strtok(NULL, " ");
     if (!password) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     int result = auth_admin_login(username, password);
-    nh_send_line(client_fd, result == SUCCESS ? "OK" : "ERR_AUTH_FAIL");
+    nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_AUTH_FAIL", client_addr);
 }
 
-void cmd_logout(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_logout(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     auth_logout();
-    nh_send_line(client_fd, "OK");
+    nh_send_to(sock, "OK", client_addr);
 }
 
-void cmd_status(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_status(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     char status[MAX_LINE_LEN];
     int result = admin_get_election_status(status, MAX_LINE_LEN);
     
     if (result == SUCCESS) {
-        nh_send_line(client_fd, status);
+        nh_send_to(sock, status, client_addr);
     } else {
-        nh_send_line(client_fd, "ERR_FILE");
+        nh_send_to(sock, "ERR_FILE", client_addr);
     }
 }
 
-void cmd_register_voter(int client_fd, char *args) {
+void cmd_register_voter(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
-    // Find the space between name and password
     char *space = strchr(args, ' ');
     if (!space) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -140,25 +119,25 @@ void cmd_register_voter(int client_fd, char *args) {
     if (result >= 0) {
         char response[CMD_BUF_LEN];
         snprintf(response, CMD_BUF_LEN, "OK %d", result);
-        nh_send_line(client_fd, response);
+        nh_send_to(sock, response, client_addr);
     } else {
         switch (result) {
             case ERR_DUPLICATE:
-                nh_send_line(client_fd, "ERR_DUPLICATE");
+                nh_send_to(sock, "ERR_DUPLICATE", client_addr);
                 break;
             case ERR_FULL:
-                nh_send_line(client_fd, "ERR_FULL");
+                nh_send_to(sock, "ERR_FULL", client_addr);
                 break;
             default:
-                nh_send_line(client_fd, "ERR_FILE");
+                nh_send_to(sock, "ERR_FILE", client_addr);
                 break;
         }
     }
 }
 
-void cmd_add_position(int client_fd, char *args) {
+void cmd_add_position(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args || strlen(args) == 0) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -168,19 +147,19 @@ void cmd_add_position(int client_fd, char *args) {
     if (result >= 0) {
         char response[CMD_BUF_LEN];
         snprintf(response, CMD_BUF_LEN, "OK %d", result);
-        nh_send_line(client_fd, response);
+        nh_send_to(sock, response, client_addr);
     } else {
-        nh_send_line(client_fd, result == ERR_DUPLICATE ? "ERR_DUPLICATE" : "ERR_FILE");
+        nh_send_to(sock, result == ERR_DUPLICATE ? "ERR_DUPLICATE" : "ERR_FILE", client_addr);
     }
 }
 
-void cmd_list_positions(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_list_positions(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     Position positions[MAX_POSITIONS];
     int count = pos_get_all(positions, MAX_POSITIONS);
     
     if (count == ERR_FILE || count == 0) {
-        nh_send_line(client_fd, "ERR_EMPTY");
+        nh_send_to(sock, "ERR_EMPTY", client_addr);
         return;
     }
     
@@ -192,22 +171,21 @@ void cmd_list_positions(int client_fd, char *args) {
         replace_spaces(name_copy);
         
         snprintf(line, CMD_BUF_LEN, "%d %s", positions[i].id, name_copy);
-        nh_send_line(client_fd, line);
+        nh_send_to(sock, line, client_addr);
     }
     
-    nh_send_line(client_fd, "END");
+    nh_send_to(sock, "END", client_addr);
 }
 
-void cmd_register_cand(int client_fd, char *args) {
+void cmd_register_cand(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
-    // Find the space between name and position_id
-    char *space = strrchr(args, ' '); // Find last space for position_id
+    char *space = strrchr(args, ' ');
     if (!space) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -222,25 +200,25 @@ void cmd_register_cand(int client_fd, char *args) {
     if (result >= 0) {
         char response[CMD_BUF_LEN];
         snprintf(response, CMD_BUF_LEN, "OK %d", result);
-        nh_send_line(client_fd, response);
+        nh_send_to(sock, response, client_addr);
     } else {
         switch (result) {
             case ERR_NOT_FOUND:
-                nh_send_line(client_fd, "ERR_NOT_FOUND");
+                nh_send_to(sock, "ERR_NOT_FOUND", client_addr);
                 break;
             case ERR_DUPLICATE:
-                nh_send_line(client_fd, "ERR_DUPLICATE");
+                nh_send_to(sock, "ERR_DUPLICATE", client_addr);
                 break;
             default:
-                nh_send_line(client_fd, "ERR_FILE");
+                nh_send_to(sock, "ERR_FILE", client_addr);
                 break;
         }
     }
 }
 
-void cmd_list_cands(int client_fd, char *args) {
+void cmd_list_cands(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -249,7 +227,7 @@ void cmd_list_cands(int client_fd, char *args) {
     int count = cand_get_for_position(position_id, candidates, MAX_CANDIDATES);
     
     if (count == ERR_FILE || count == 0) {
-        nh_send_line(client_fd, "ERR_EMPTY");
+        nh_send_to(sock, "ERR_EMPTY", client_addr);
         return;
     }
     
@@ -261,37 +239,37 @@ void cmd_list_cands(int client_fd, char *args) {
         replace_spaces(name_copy);
         
         snprintf(line, CMD_BUF_LEN, "%d %s", candidates[i].id, name_copy);
-        nh_send_line(client_fd, line);
+        nh_send_to(sock, line, client_addr);
     }
     
-    nh_send_line(client_fd, "END");
+    nh_send_to(sock, "END", client_addr);
 }
 
-void cmd_open_voting(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_open_voting(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     int result = admin_open_voting();
-    nh_send_line(client_fd, result == SUCCESS ? "OK" : "ERR_FILE");
+    nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_FILE", client_addr);
 }
 
-void cmd_close_voting(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_close_voting(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     int result = admin_close_voting();
-    nh_send_line(client_fd, result == SUCCESS ? "OK" : "ERR_FILE");
+    nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_FILE", client_addr);
 }
 
-void cmd_cast_vote(int client_fd, char *args) {
+void cmd_cast_vote(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -299,7 +277,7 @@ void cmd_cast_vote(int client_fd, char *args) {
     char *candidate_id_str = strtok(NULL, " ");
     
     if (!position_id_str || !candidate_id_str) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -308,7 +286,7 @@ void cmd_cast_vote(int client_fd, char *args) {
     int voter_id = auth_get_voter_id();
     
     if (voter_id < 0) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
@@ -316,34 +294,77 @@ void cmd_cast_vote(int client_fd, char *args) {
     
     switch (result) {
         case SUCCESS:
-            nh_send_line(client_fd, "OK");
+            nh_send_to(sock, "OK", client_addr);
             break;
         case ERR_CLOSED:
-            nh_send_line(client_fd, "ERR_CLOSED");
+            nh_send_to(sock, "ERR_CLOSED", client_addr);
             break;
         case ERR_VOTED:
-            nh_send_line(client_fd, "ERR_VOTED");
+            nh_send_to(sock, "ERR_VOTED", client_addr);
             break;
         case ERR_NOT_FOUND:
-            nh_send_line(client_fd, "ERR_NOT_FOUND");
+            nh_send_to(sock, "ERR_NOT_FOUND", client_addr);
             break;
         default:
-            nh_send_line(client_fd, "ERR_FILE");
+            nh_send_to(sock, "ERR_FILE", client_addr);
             break;
     }
 }
 
-void cmd_results(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_cast_all_votes(int sock, struct sockaddr_in *client_addr, char *args) {
+    if (!args) {
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
+        return;
+    }
+    
+    int voter_id = auth_get_voter_id();
+    if (voter_id < 0) {
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
+        return;
+    }
+    
+    int success_count = 0;
+    int error_count = 0;
+    
+    // Parse position:candidate pairs (format: " pos_id:cand_id pos_id:cand_id ...")
+    char *token = strtok(args, " ");
+    while (token != NULL) {
+        char *colon = strchr(token, ':');
+        if (colon) {
+            *colon = '\0';
+            int position_id = atoi(token);
+            int candidate_id = atoi(colon + 1);
+            
+            int result = voting_cast_vote(voter_id, position_id, candidate_id);
+            if (result == SUCCESS) {
+                success_count++;
+            } else {
+                error_count++;
+            }
+        }
+        token = strtok(NULL, " ");
+    }
+    
+    if (success_count > 0 && error_count == 0) {
+        nh_send_to(sock, "OK", client_addr);
+    } else if (success_count > 0) {
+        nh_send_to(sock, "OK PARTIAL", client_addr);
+    } else {
+        nh_send_to(sock, "ERR_FILE", client_addr);
+    }
+}
+
+void cmd_results(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     char status[MAX_LINE_LEN];
     admin_get_election_status(status, MAX_LINE_LEN);
     if (strcmp(status, "CLOSED") != 0) {
-        nh_send_line(client_fd, "ERR_CLOSED");
+        nh_send_to(sock, "ERR_CLOSED", client_addr);
         return;
     }
     
@@ -352,11 +373,10 @@ void cmd_results(int client_fd, char *args) {
     
     int result = tally_compute(results, &count);
     if (result != SUCCESS || count == 0) {
-        nh_send_line(client_fd, "ERR_EMPTY");
+        nh_send_to(sock, "ERR_EMPTY", client_addr);
         return;
     }
     
-    // Group by position
     Position positions[MAX_POSITIONS];
     int pos_count = pos_get_all(positions, MAX_POSITIONS);
     
@@ -368,7 +388,7 @@ void cmd_results(int client_fd, char *args) {
         replace_spaces(pos_name_copy);
         
         snprintf(line, CMD_BUF_LEN, "POSITION %s", pos_name_copy);
-        nh_send_line(client_fd, line);
+        nh_send_to(sock, line, client_addr);
         
         TallyResult winner;
         winner.vote_count = -1;
@@ -382,7 +402,7 @@ void cmd_results(int client_fd, char *args) {
                 
                 snprintf(line, CMD_BUF_LEN, "CANDIDATE %s %d %.2f", 
                         cand_name_copy, results[i].vote_count, results[i].percentage);
-                nh_send_line(client_fd, line);
+                nh_send_to(sock, line, client_addr);
                 
                 if (results[i].vote_count > winner.vote_count) {
                     winner = results[i];
@@ -397,39 +417,38 @@ void cmd_results(int client_fd, char *args) {
             replace_spaces(winner_name_copy);
             
             snprintf(line, CMD_BUF_LEN, "WINNER %s %d", winner_name_copy, winner.vote_count);
-            nh_send_line(client_fd, line);
+            nh_send_to(sock, line, client_addr);
         }
     }
     
-    // Send turnout
     float turnout = tally_voter_turnout();
     char line[CMD_BUF_LEN];
     snprintf(line, CMD_BUF_LEN, "TURNOUT %.2f", turnout);
-    nh_send_line(client_fd, line);
+    nh_send_to(sock, line, client_addr);
     
-    nh_send_line(client_fd, "END");
+    nh_send_to(sock, "END", client_addr);
 }
 
-void cmd_reset(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_reset(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     int result = admin_reset_direct();
-    nh_send_line(client_fd, result == SUCCESS ? "OK" : "ERR_FILE");
+    nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_FILE", client_addr);
 }
 
-void cmd_quit(int client_fd, char *args) {
-    (void)args; // Unused
-    nh_send_line(client_fd, "OK");
+void cmd_quit(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
+    nh_send_to(sock, "OK", client_addr);
     last_was_quit = 1;
 }
 
-void cmd_self_register(int client_fd, char *args) {
+void cmd_self_register(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -437,7 +456,7 @@ void cmd_self_register(int client_fd, char *args) {
     char *password = strtok(NULL, " ");
     
     if (!name || !password) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -445,7 +464,7 @@ void cmd_self_register(int client_fd, char *args) {
     
     int voter_id = voter_next_id();
     if (voter_id == ERR_FILE) {
-        nh_send_line(client_fd, "ERR_FILE");
+        nh_send_to(sock, "ERR_FILE", client_addr);
         return;
     }
     
@@ -453,82 +472,78 @@ void cmd_self_register(int client_fd, char *args) {
     if (result == SUCCESS) {
         char response[CMD_BUF_LEN];
         snprintf(response, CMD_BUF_LEN, "OK %d", voter_id);
-        nh_send_line(client_fd, response);
+        nh_send_to(sock, response, client_addr);
     } else {
         switch (result) {
             case ERR_DUPLICATE:
-                nh_send_line(client_fd, "ERR_DUPLICATE");
+                nh_send_to(sock, "ERR_DUPLICATE", client_addr);
                 break;
             case ERR_FULL:
-                nh_send_line(client_fd, "ERR_FULL");
+                nh_send_to(sock, "ERR_FULL", client_addr);
                 break;
             default:
-                nh_send_line(client_fd, "ERR_UNKNOWN");
+                nh_send_to(sock, "ERR_UNKNOWN", client_addr);
                 break;
         }
     }
 }
 
-void cmd_apply_candidate(int client_fd, char *args) {
+void cmd_apply_candidate(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     if (!auth_is_logged_in()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     char *pos_id_str = strtok(args, " ");
     if (!pos_id_str) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     int position_id = atoi(pos_id_str);
     
-    // Get position details
     Position pos;
     if (pos_get_by_id(position_id, &pos) != SUCCESS) {
-        nh_send_line(client_fd, "ERR_NOT_FOUND");
+        nh_send_to(sock, "ERR_NOT_FOUND", client_addr);
         return;
     }
     
-    // Get current voter info
     Voter voter;
     if (voter_get_by_id(auth_get_voter_id(), &voter) != SUCCESS) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
-    // Check if voter already applied
     CandidateApplication existing;
     if (application_get_by_voter(voter.id, &existing) == SUCCESS) {
-        nh_send_line(client_fd, "ERR_DUPLICATE");
+        nh_send_to(sock, "ERR_DUPLICATE", client_addr);
         return;
     }
     
-    // Create application
     int result = application_add(voter.id, voter.name, position_id, pos.name);
     if (result == SUCCESS) {
-        nh_send_line(client_fd, "OK");
+        nh_send_to(sock, "OK", client_addr);
     } else {
         switch (result) {
             case ERR_DUPLICATE:
-                nh_send_line(client_fd, "ERR_DUPLICATE");
+                nh_send_to(sock, "ERR_DUPLICATE", client_addr);
                 break;
             default:
-                nh_send_line(client_fd, "ERR_UNKNOWN");
+                nh_send_to(sock, "ERR_UNKNOWN", client_addr);
                 break;
         }
     }
 }
 
-void cmd_list_applications(int client_fd, char *args) {
-    (void)args; // Unused
+void cmd_list_applications(int sock, struct sockaddr_in *client_addr, char *args) {
+    (void)args;
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
@@ -536,7 +551,7 @@ void cmd_list_applications(int client_fd, char *args) {
     int count = application_get_pending(apps, MAX_CANDIDATES);
     
     if (count == 0) {
-        nh_send_line(client_fd, "ERR_EMPTY");
+        nh_send_to(sock, "ERR_EMPTY", client_addr);
         return;
     }
     
@@ -544,92 +559,89 @@ void cmd_list_applications(int client_fd, char *args) {
         char line[CMD_BUF_LEN];
         snprintf(line, CMD_BUF_LEN, "%d %s %d %s", 
                  apps[i].id, apps[i].voter_name, apps[i].position_id, apps[i].position_name);
-        nh_send_line(client_fd, line);
+        nh_send_to(sock, line, client_addr);
     }
     
-    nh_send_line(client_fd, "END");
+    nh_send_to(sock, "END", client_addr);
 }
 
-void cmd_approve_application(int client_fd, char *args) {
+void cmd_approve_application(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     int app_id = atoi(args);
     
-    // Get application details
     CandidateApplication apps[MAX_CANDIDATES];
     int count = application_get_all(apps, MAX_CANDIDATES);
     
     CandidateApplication *target_app = NULL;
     for (int i = 0; i < count; i++) {
-        if (apps[i].id == app_id && apps[i].status == 0) { // Pending
+        if (apps[i].id == app_id && apps[i].status == 0) {
             target_app = &apps[i];
             break;
         }
     }
     
     if (!target_app) {
-        nh_send_line(client_fd, "ERR_NOT_FOUND");
+        nh_send_to(sock, "ERR_NOT_FOUND", client_addr);
         return;
     }
     
-    // Register as candidate
     int result = cand_register(target_app->voter_name, target_app->position_id);
     if (result == SUCCESS) {
-        // Update application status
-        application_update_status(app_id, 1); // Approved
-        nh_send_line(client_fd, "OK");
+        application_update_status(app_id, 1);
+        nh_send_to(sock, "OK", client_addr);
     } else {
         switch (result) {
             case ERR_DUPLICATE:
-                nh_send_line(client_fd, "ERR_DUPLICATE");
+                nh_send_to(sock, "ERR_DUPLICATE", client_addr);
                 break;
             case ERR_FULL:
-                nh_send_line(client_fd, "ERR_FULL");
+                nh_send_to(sock, "ERR_FULL", client_addr);
                 break;
             default:
-                nh_send_line(client_fd, "ERR_UNKNOWN");
+                nh_send_to(sock, "ERR_UNKNOWN", client_addr);
                 break;
         }
     }
 }
 
-void cmd_reject_application(int client_fd, char *args) {
+void cmd_reject_application(int sock, struct sockaddr_in *client_addr, char *args) {
     if (!args) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     if (!auth_is_admin()) {
-        nh_send_line(client_fd, "ERR_AUTH_FAIL");
+        nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
     
     int app_id = atoi(args);
     
-    int result = application_update_status(app_id, 2); // Rejected
+    int result = application_update_status(app_id, 2);
     if (result == SUCCESS) {
-        nh_send_line(client_fd, "OK");
+        nh_send_to(sock, "OK", client_addr);
     } else {
-        nh_send_line(client_fd, "ERR_NOT_FOUND");
+        nh_send_to(sock, "ERR_NOT_FOUND", client_addr);
     }
 }
 
-void dispatch_command(int client_fd, char *cmd_buf) {
+void dispatch_command(int sock, struct sockaddr_in *client_addr, char *cmd_buf) {
     char cmd_copy[CMD_BUF_LEN];
     strncpy(cmd_copy, cmd_buf, CMD_BUF_LEN - 1);
     cmd_copy[CMD_BUF_LEN - 1] = '\0';
     
     char *verb = strtok(cmd_copy, " ");
     if (!verb) {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
@@ -641,100 +653,147 @@ void dispatch_command(int client_fd, char *cmd_buf) {
     last_was_quit = 0;
     
     if (strcmp(verb, "LOGIN") == 0) {
-        cmd_login(client_fd, args);
+        cmd_login(sock, client_addr, args);
     } else if (strcmp(verb, "ADMIN_LOGIN") == 0) {
-        cmd_admin_login(client_fd, args);
+        cmd_admin_login(sock, client_addr, args);
     } else if (strcmp(verb, "LOGOUT") == 0) {
-        cmd_logout(client_fd, args);
+        cmd_logout(sock, client_addr, args);
     } else if (strcmp(verb, "STATUS") == 0) {
-        cmd_status(client_fd, args);
+        cmd_status(sock, client_addr, args);
     } else if (strcmp(verb, "SELF_REGISTER") == 0) {
-        cmd_self_register(client_fd, args);
+        cmd_self_register(sock, client_addr, args);
     } else if (strcmp(verb, "APPLY_CANDIDATE") == 0) {
-        cmd_apply_candidate(client_fd, args);
+        cmd_apply_candidate(sock, client_addr, args);
     } else if (strcmp(verb, "LIST_APPLICATIONS") == 0) {
-        cmd_list_applications(client_fd, args);
+        cmd_list_applications(sock, client_addr, args);
     } else if (strcmp(verb, "APPROVE_APPLICATION") == 0) {
-        cmd_approve_application(client_fd, args);
+        cmd_approve_application(sock, client_addr, args);
     } else if (strcmp(verb, "REJECT_APPLICATION") == 0) {
-        cmd_reject_application(client_fd, args);
+        cmd_reject_application(sock, client_addr, args);
     } else if (strcmp(verb, "ADD_POSITION") == 0) {
-        cmd_add_position(client_fd, args);
+        cmd_add_position(sock, client_addr, args);
     } else if (strcmp(verb, "LIST_POSITIONS") == 0) {
-        cmd_list_positions(client_fd, args);
+        cmd_list_positions(sock, client_addr, args);
     } else if (strcmp(verb, "REGISTER_CAND") == 0) {
-        cmd_register_cand(client_fd, args);
+        cmd_register_cand(sock, client_addr, args);
     } else if (strcmp(verb, "LIST_CANDS") == 0) {
-        cmd_list_cands(client_fd, args);
+        cmd_list_cands(sock, client_addr, args);
     } else if (strcmp(verb, "OPEN_VOTING") == 0) {
-        cmd_open_voting(client_fd, args);
+        cmd_open_voting(sock, client_addr, args);
     } else if (strcmp(verb, "CLOSE_VOTING") == 0) {
-        cmd_close_voting(client_fd, args);
+        cmd_close_voting(sock, client_addr, args);
     } else if (strcmp(verb, "CAST_VOTE") == 0) {
-        cmd_cast_vote(client_fd, args);
+        cmd_cast_vote(sock, client_addr, args);
+    } else if (strcmp(verb, "CAST_ALL_VOTES") == 0) {
+        cmd_cast_all_votes(sock, client_addr, args);
     } else if (strcmp(verb, "RESULTS") == 0) {
-        cmd_results(client_fd, args);
+        cmd_results(sock, client_addr, args);
     } else if (strcmp(verb, "RESET") == 0) {
-        cmd_reset(client_fd, args);
+        cmd_reset(sock, client_addr, args);
     } else if (strcmp(verb, "QUIT") == 0) {
-        cmd_quit(client_fd, args);
+        cmd_quit(sock, client_addr, args);
     } else {
-        nh_send_line(client_fd, "ERR_UNKNOWN");
+        nh_send_to(sock, "ERR_UNKNOWN", client_addr);
     }
+    
+    printf("CMD [%s] from %s:%d\n", verb,
+           inet_ntoa(client_addr->sin_addr), ntohs(client_addr->sin_port));
 }
 
-void handle_session(int client_fd) {
-    // Reset auth state at start of each session
-    auth_logout();
-    
+// Message struct for master-slave communication via POSIX message queue
+typedef struct {
     char cmd_buf[CMD_BUF_LEN];
-    
-    while (1) {
-        int result = nh_recv_line(client_fd, cmd_buf, CMD_BUF_LEN);
-        if (result == ERR_CONN) {
-            printf("Client disconnected.\n");
-            break;
-        }
-        
-        printf("CMD: %s\n", cmd_buf);
-        dispatch_command(client_fd, cmd_buf);
-        
-        if (last_was_quit) {
-            break;
-        }
-    }
-    
-    nh_close(client_fd);
-    printf("Session ended.\n");
+    struct sockaddr_in client_addr;
+} DgramMsg;
+
+// SIGCHLD handler to prevent zombie slave processes
+static void sigchld_handler(int sig) {
+    (void)sig;
+    while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 int main(void) {
-    // Initialize files
     int result = fh_init_files();
     if (result != SUCCESS) {
         printf("Failed to initialize files. Exiting.\n");
         return 1;
     }
     
-    // Initialize server
     int server_fd = nh_server_init(SERVER_PORT);
     if (server_fd == ERR_CONN) {
-        printf("Failed to start server. Exiting.\n");
+        printf("Failed to start UDP server. Exiting.\n");
         return 1;
     }
     
-    printf("SONU Voting Server ready. Waiting for connections...\n");
-    
-    // Main server loop
-    while (1) {
-        int client_fd = nh_server_accept(server_fd);
-        if (client_fd == ERR_CONN) {
-            continue; // Skip this iteration
-        }
-        
-        handle_session(client_fd);
+    printf("SONU Voting UDP Server ready. Waiting for datagrams...\n");
+
+    // Install SIGCHLD handler to prevent zombie slave processes
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &sa, NULL);
+
+    // Open POSIX message queue for master-slave communication
+    struct mq_attr attr;
+    attr.mq_flags = 0;
+    attr.mq_maxmsg = MQ_MAX_MSG;
+    attr.mq_msgsize = sizeof(DgramMsg);
+    attr.mq_curmsgs = 0;
+    mqd_t mq = mq_open(MQ_NAME, O_CREAT | O_RDWR, 0666, &attr);
+    if (mq == (mqd_t)-1) {
+        perror("mq_open");
+        return 1;
     }
-    
-    // This line is unreachable but required by C standard
+
+    // Main loop - master process receives datagrams and forks slaves
+    while (1) {
+        DgramMsg msg;
+
+        // MASTER receives the datagram — command text and sender address
+        int r = nh_recv_from(server_fd, msg.cmd_buf, CMD_BUF_LEN, &msg.client_addr);
+        if (r == ERR_CONN) continue;
+
+        // MASTER places the datagram into the message queue for the slave to pick up
+        if (mq_send(mq, (char *)&msg, sizeof(DgramMsg), 0) == -1) {
+            perror("mq_send");
+            continue;
+        }
+
+        // MASTER forks a slave to handle this datagram
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            perror("fork");
+            continue;
+        }
+
+        if (pid == 0) {
+            // SLAVE PROCESS
+            // Slave pulls the datagram from the queue
+            DgramMsg slave_msg;
+            if (mq_receive(mq, (char *)&slave_msg, sizeof(DgramMsg), NULL) == -1) {
+                perror("mq_receive");
+                exit(1);
+            }
+
+            // Slave processes the voting command — login, cast_vote, results, etc.
+            // It uses the client address from the message to send the reply back
+            last_was_quit = 0;
+            dispatch_command(server_fd, &slave_msg.client_addr, slave_msg.cmd_buf);
+
+            // Slave exits after handling exactly one datagram
+            mq_close(mq);
+            exit(0);
+        }
+
+        // MASTER loops back immediately to receive the next datagram
+    }
+
+    // Cleanup (unreachable in infinite loop but good practice)
+    mq_close(mq);
+    mq_unlink(MQ_NAME);
+
+    nh_close(server_fd);
     return 0;
 }
