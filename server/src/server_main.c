@@ -64,19 +64,30 @@ void cmd_login(int sock, struct sockaddr_in *client_addr, char *args) {
 }
 
 void cmd_admin_login(int sock, struct sockaddr_in *client_addr, char *args) {
+    printf("[DEBUG] Admin login attempt from %s:%d\n", 
+           inet_ntoa(client_addr->sin_addr), ntohs(client_addr->sin_port));
+    printf("[DEBUG] Received args: '%s'\n", args ? args : "(null)");
+    
     char *username = strtok(args, " ");
     if (!username) {
+        printf("[DEBUG] No username found\n");
         nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
     char *password = strtok(NULL, " ");
     if (!password) {
+        printf("[DEBUG] No password found\n");
         nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
     
+    printf("[DEBUG] Username: '%s', Password: '%s'\n", username, password);
+    printf("[DEBUG] Expected: user='%s', pass='%s'\n", ADMIN_USER, ADMIN_PASS);
+    
     int result = session_auth_admin(client_addr, username, password);
+    printf("[DEBUG] Auth result: %d\n", result);
+    
     nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_AUTH_FAIL", client_addr);
 }
 
@@ -636,12 +647,16 @@ void cmd_reject_application(int sock, struct sockaddr_in *client_addr, char *arg
 }
 
 void dispatch_command(int sock, struct sockaddr_in *client_addr, char *cmd_buf) {
+    printf("[DEBUG] Received command from %s:%d: '%s'\n", 
+           inet_ntoa(client_addr->sin_addr), ntohs(client_addr->sin_port), cmd_buf);
+    
     char cmd_copy[CMD_BUF_LEN];
     strncpy(cmd_copy, cmd_buf, CMD_BUF_LEN - 1);
     cmd_copy[CMD_BUF_LEN - 1] = '\0';
     
     char *verb = strtok(cmd_copy, " ");
     if (!verb) {
+        printf("[DEBUG] No verb found in command\n");
         nh_send_to(sock, "ERR_UNKNOWN", client_addr);
         return;
     }
@@ -650,6 +665,8 @@ void dispatch_command(int sock, struct sockaddr_in *client_addr, char *cmd_buf) 
     if (strlen(verb) < strlen(cmd_buf)) {
         args = cmd_buf + strlen(verb) + 1;
     }
+    
+    printf("[DEBUG] Verb: '%s', Args: '%s'\n", verb, args ? args : "(none)");
     
     last_was_quit = 0;
     
