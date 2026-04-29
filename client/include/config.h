@@ -13,6 +13,10 @@
 #define MAX_POSITIONS 20
 #define MAX_CANDIDATES 200
 
+// Admin credentials (for reference)
+#define ADMIN_USER "admin"
+#define ADMIN_PASS "admin123"
+
 // Return codes
 #define SUCCESS 0
 #define ERR_CONN -8
