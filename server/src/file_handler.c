@@ -1,8 +1,10 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/file.h>
 #include <errno.h>
 #include "config.h"
 #include "file_handler.h"
@@ -98,10 +100,18 @@ int fh_write_all(const char *path, char lines[][MAX_LINE_LEN], int count) {
         return ERR_FILE;
     }
     
+    // Acquire exclusive lock for concurrent access
+    if (flock(fileno(fp), LOCK_EX) != 0) {
+        fclose(fp);
+        return ERR_FILE;
+    }
+    
     for (int i = 0; i < count; i++) {
         fprintf(fp, "%s\n", lines[i]);
     }
     
+    fflush(fp);
+    flock(fileno(fp), LOCK_UN);
     fclose(fp);
     return SUCCESS;
 }
@@ -112,7 +122,15 @@ int fh_append_record(const char *path, const char *record) {
         return ERR_FILE;
     }
     
+    // Acquire exclusive lock for concurrent access
+    if (flock(fileno(fp), LOCK_EX) != 0) {
+        fclose(fp);
+        return ERR_FILE;
+    }
+    
     fprintf(fp, "%s\n", record);
+    fflush(fp);
+    flock(fileno(fp), LOCK_UN);
     fclose(fp);
     return SUCCESS;
 }

@@ -1,6 +1,10 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include "config.h"
 #include "net_handler.h"
 #include "file_handler.h"
@@ -708,6 +712,12 @@ void handle_session(int client_fd) {
     printf("Session ended.\n");
 }
 
+// SIGCHLD handler to prevent zombie slave processes
+static void sigchld_handler(int sig) {
+    (void)sig;
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
 int main(void) {
     // Initialize files
     int result = fh_init_files();
@@ -725,14 +735,43 @@ int main(void) {
     
     printf("SONU Voting Server ready. Waiting for connections...\n");
     
-    // Main server loop
+    // Install SIGCHLD handler to prevent zombie slave processes
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &sa, NULL);
+    
+    // Main server loop - fork-based concurrent server
     while (1) {
         int client_fd = nh_server_accept(server_fd);
         if (client_fd == ERR_CONN) {
             continue; // Skip this iteration
         }
-        
-        handle_session(client_fd);
+
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            // fork failed — close this client and try again
+            perror("fork");
+            nh_close(client_fd);
+            continue;
+        }
+
+        if (pid == 0) {
+            // SLAVE PROCESS
+            // The slave does not need the listening socket — close it
+            close(server_fd);
+            // Handle the client session fully — auth, commands, voting logic, file saves
+            handle_session(client_fd);
+            // Slave exits when the session ends
+            exit(0);
+        }
+
+        // MASTER PROCESS
+        // Master does not own this client connection — slave does. Close master's copy.
+        nh_close(client_fd);
+        // Master loops back immediately to accept the next voter or admin
     }
     
     // This line is unreachable but required by C standard
