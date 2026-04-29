@@ -12,6 +12,7 @@
 #include "file_handler.h"
 #include "utils.h"
 #include "auth.h"
+#include "auth_session.h"
 #include "admin.h"
 #include "voter.h"
 #include "position.h"
@@ -75,13 +76,13 @@ void cmd_admin_login(int sock, struct sockaddr_in *client_addr, char *args) {
         return;
     }
     
-    int result = auth_admin_login(username, password);
+    int result = session_auth_admin(client_addr, username, password);
     nh_send_to(sock, result == SUCCESS ? "OK" : "ERR_AUTH_FAIL", client_addr);
 }
 
 void cmd_logout(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    auth_logout();
+    session_logout(client_addr);
     nh_send_to(sock, "OK", client_addr);
 }
 
@@ -247,7 +248,7 @@ void cmd_list_cands(int sock, struct sockaddr_in *client_addr, char *args) {
 
 void cmd_open_voting(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -258,7 +259,7 @@ void cmd_open_voting(int sock, struct sockaddr_in *client_addr, char *args) {
 
 void cmd_close_voting(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -356,7 +357,7 @@ void cmd_cast_all_votes(int sock, struct sockaddr_in *client_addr, char *args) {
 
 void cmd_results(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -431,7 +432,7 @@ void cmd_results(int sock, struct sockaddr_in *client_addr, char *args) {
 
 void cmd_reset(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -542,7 +543,7 @@ void cmd_apply_candidate(int sock, struct sockaddr_in *client_addr, char *args) 
 
 void cmd_list_applications(int sock, struct sockaddr_in *client_addr, char *args) {
     (void)args;
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -571,7 +572,7 @@ void cmd_approve_application(int sock, struct sockaddr_in *client_addr, char *ar
         return;
     }
     
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -619,7 +620,7 @@ void cmd_reject_application(int sock, struct sockaddr_in *client_addr, char *arg
         return;
     }
     
-    if (!auth_is_admin()) {
+    if (!session_is_admin(client_addr)) {
         nh_send_to(sock, "ERR_AUTH_FAIL", client_addr);
         return;
     }
@@ -713,6 +714,9 @@ static void sigchld_handler(int sig) {
 }
 
 int main(void) {
+    // Initialize session management
+    session_init();
+    
     int result = fh_init_files();
     if (result != SUCCESS) {
         printf("Failed to initialize files. Exiting.\n");

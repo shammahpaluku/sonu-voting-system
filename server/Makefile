@@ -8,6 +8,7 @@ SRCS = src/file_handler.c \
        src/candidate.c \
        src/voter.c \
        src/auth.c \
+       src/auth_session.c \
        src/admin.c \
        src/voting.c \
        src/tally.c \

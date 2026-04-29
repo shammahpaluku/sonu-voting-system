@@ -10,3 +10,8 @@
 10|Faith_Chebet|5
 11|Alice|1
 12|CandidateUDP|1
+13|1|1
+14|shaz mugambi |1
+15|duncan musa|1
+16|john mark |2
+17|jokesana|2
